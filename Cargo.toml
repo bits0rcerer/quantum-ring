@@ -1,0 +1,25 @@
+[package]
+name = "quantum-ring"
+version = "0.1.0"
+edition = "2021"
+description = "An easy-to-use low-level ring buffer implementation that leverages virtual address space trickery."
+authors = ["bits0rcerer <25325997+bits0rcerer@users.noreply.github.com>"]
+
+[dependencies]
+tracing = "0.1.40"
+thiserror = "1.0.56"
+
+mmap-rs = "0.6.0"
+mkstemp-rs = "1.0.0"
+
+tokio-io = { version = "0.2.0-alpha.6", default-features = false, optional = true }
+futures-io = { version = "0.3.30", default-features = false, optional = true, features = ["std"] }
+
+[features]
+tokio = ["dep:tokio-io"]
+futures = ["dep:futures-io"]
+async = ["tokio", "futures"]
+
+[dev-dependencies]
+tracing-subscriber = "0.3.18"
+rand = "0.8.5"
