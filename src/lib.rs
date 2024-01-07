@@ -56,6 +56,7 @@ impl PageSizeIter {
 
 pub struct QuantumRing {
     pub(crate) first_map: MmapMut,
+    #[allow(unused)]
     pub(crate) second_map: MmapMut,
 
     pub(crate) read: usize,
@@ -108,7 +109,7 @@ impl QuantumRing {
                 true,
             )?;
             fd.inner().set_len(physical_size as u64)?;
-            let raw_fd = fd.inner().as_raw_fd() as i32;
+            let raw_fd = fd.inner().as_raw_fd();
             trace!(
                 fd = raw_fd,
                 file = fd.path(),
