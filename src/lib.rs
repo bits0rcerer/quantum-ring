@@ -175,7 +175,7 @@ impl QuantumRing {
             });
         }
 
-        let page_configs = PageSizeIter::new(supported_page_sizes | allowed_page_sizes)
+        let page_configs = PageSizeIter::new(supported_page_sizes & allowed_page_sizes)
             .map(|page_size| {
                 let page_bytes = 1usize << page_size.0;
 
