@@ -236,11 +236,6 @@ impl QuantumRing {
         unsafe { &*slice_from_raw_parts(self.first_map.as_ptr().add(self.read), self.read_len()) }
     }
 
-    #[inline(always)]
-    pub unsafe fn read_slice_shared(&self) -> &[u8] {
-        unsafe { &*slice_from_raw_parts(self.first_map.as_ptr().add(self.read), self.read_len()) }
-    }
-
     /// # Safety
     /// special care must be taken when advancing the read pointer
     #[inline(always)]
