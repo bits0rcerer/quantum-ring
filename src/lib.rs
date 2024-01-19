@@ -1,12 +1,14 @@
 #![feature(assert_matches)]
 
 use std::cmp::{min, Ordering};
+use std::io;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 #[cfg(any(feature = "futures", feature = "tokio"))]
 use std::task::{Context, Poll, Waker};
 
+use madvise::AccessPattern;
 pub use mmap_rs::{MmapFlags, MmapMut, MmapOptions, PageSize, PageSizes, UnsafeMmapFlags};
 use thiserror::Error;
 use tracing::{debug, trace};
@@ -148,7 +150,7 @@ impl QuantumRing {
             second.size()
         );
 
-        Ok(Self {
+        let qr = Self {
             read: 0,
             write: 0,
             len: 0,
@@ -160,7 +162,9 @@ impl QuantumRing {
             read_waker: None,
             #[cfg(any(feature = "futures", feature = "tokio"))]
             write_waker: None,
-        })
+        };
+        qr.madvise(AccessPattern::Sequential)?;
+        Ok(qr)
     }
 
     pub fn new_with_size(
@@ -214,6 +218,16 @@ impl QuantumRing {
         );
 
         Self::new(pages, page_size)
+    }
+
+    pub fn madvise(&self, access_pattern: AccessPattern) -> io::Result<()> {
+        unsafe {
+            madvise::madvise(
+                self.first_map.as_ptr(),
+                self.first_map.len() + self.second_map.size(),
+                access_pattern,
+            )
+        }
     }
 
     #[inline(always)]

@@ -132,6 +132,15 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b955cdeb2a02b9117f121ce63aa52d08ade45de53e48fe6a38b39c10f6f709"
 dependencies = [
+    "libc",
+]
+
+[[package]]
+name = "madvise"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1e75c3c34c2b34cec9f127418cb35240c7ebee5de36a51437e6b382c161b86"
+dependencies = [
  "libc",
 ]
 
@@ -243,6 +252,7 @@ name = "quantum-ring"
 version = "0.1.0"
 dependencies = [
  "futures-io",
+    "madvise",
  "mkstemp-rs",
  "mmap-rs",
  "rand",
