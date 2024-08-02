@@ -250,7 +250,7 @@ impl QuantumRing {
             PageSizes::from_bits(1usize << page_size.0).unwrap(),
         );
 
-        Self::new(pages, page_size, min_padding.saturating_sub(overhead))
+        Self::new(pages, page_size, min_padding)
     }
 
     pub fn madvise(&self, access_pattern: AccessPattern) -> io::Result<()> {
