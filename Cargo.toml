@@ -1,6 +1,6 @@
 [package]
 name = "quantum-ring"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "An easy-to-use low-level ring buffer implementation that leverages virtual address space trickery."
 authors = ["bits0rcerer <25325997+bits0rcerer@users.noreply.github.com>"]
@@ -9,7 +9,7 @@ authors = ["bits0rcerer <25325997+bits0rcerer@users.noreply.github.com>"]
 tracing = "0.1.40"
 thiserror = "1.0.56"
 
-mmap-rs = "0.6.0"
+mmap-rs = "0.6.1"
 madvise = "0.1.0"
 mkstemp-rs = "1.0.0"
 
@@ -24,3 +24,4 @@ async = ["tokio", "futures"]
 [dev-dependencies]
 tracing-subscriber = "0.3.18"
 rand = "0.8.5"
+ctor = "0.2.8"

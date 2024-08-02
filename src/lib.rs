@@ -60,6 +60,8 @@ pub struct QuantumRing {
     pub(crate) first_map: MmapMut,
     #[allow(unused)]
     pub(crate) second_map: MmapMut,
+    #[allow(unused)]
+    pub(crate) padding_map: Option<MmapMut>,
 
     pub(crate) read: usize,
     pub(crate) write: usize,
@@ -73,7 +75,11 @@ pub struct QuantumRing {
 }
 
 impl QuantumRing {
-    pub fn new(pages: usize, page_size: PageSize) -> Result<Self, QuantumRingError> {
+    pub fn new(
+        pages: usize,
+        page_size: PageSize,
+        min_padding: usize,
+    ) -> Result<Self, QuantumRingError> {
         let supported_page_sizes = MmapOptions::page_sizes()?;
         {
             let sizes = PageSizes::from_bits(1usize << page_size.0).unwrap();
@@ -85,22 +91,30 @@ impl QuantumRing {
             }
         }
 
-        let (first, second) = unsafe {
-            let physical_size = pages * (1usize << page_size.0);
+        let (first, second, padding) = unsafe {
+            let page_bytes = 1usize << page_size.0;
+            let physical_size = pages * page_bytes;
 
-            let mut reserved = MmapOptions::new(2 * physical_size)?
-                //.with_page_size(page_size)
-                .map_none()?;
+            let padding_pages = (min_padding + page_bytes - 1) / page_bytes; // round up
+            let padding_bytes = padding_pages * page_bytes;
+
+            let reserved_size = (2 * physical_size) + padding_bytes;
+            let mut reserved = MmapOptions::new(reserved_size)?.map_none()?;
 
             let first_reserved = reserved.split_to(physical_size)?;
-            let second_reserved = reserved;
+            let (second_reserved, padding_reserved) = match padding_pages {
+                0 => (reserved, None),
+                _ => (reserved.split_to(physical_size)?, Some(reserved)),
+            };
+
             trace!(
                 first_reserved_start = first_reserved.start(),
                 first_reserved_size = first_reserved.size(),
                 second_reserved_start = second_reserved.start(),
                 second_reserved_size = second_reserved.size(),
-                "reserved 2 * {physical_size} = {} in virtual memory space",
-                2 * physical_size
+                padding_reserved_start = padding_reserved.as_ref().map(|p| p.start()).unwrap_or_default(),
+                padding_reserved_size = padding_reserved.as_ref().map(|p| p.size()).unwrap_or_default(),
+                "reserved 2 * {physical_size} + {padding_bytes} = {reserved_size} in virtual memory space"
             );
 
             let mut fd = mkstemp::TempFile::new(
@@ -131,11 +145,24 @@ impl QuantumRing {
                 .with_unsafe_flags(UnsafeMmapFlags::MAP_FIXED)
                 .with_file(fd.inner(), 0)
                 .map_mut()?;
+            let padding = if let Some(padding_reserved) = padding_reserved.as_ref() {
+                Some(
+                    MmapOptions::new(padding_reserved.size())?
+                        .with_address(padding_reserved.start())
+                        .with_flags(MmapFlags::SHARED | MmapFlags::TRANSPARENT_HUGE_PAGES)
+                        .with_unsafe_flags(UnsafeMmapFlags::MAP_FIXED)
+                        .with_file(fd.inner(), 0)
+                        .map_mut()?,
+                )
+            } else {
+                None
+            };
 
             std::mem::forget(first_reserved);
             std::mem::forget(second_reserved);
+            std::mem::forget(padding_reserved);
 
-            (first, second)
+            (first, second, padding)
         };
 
         debug!(
@@ -143,11 +170,15 @@ impl QuantumRing {
             first_map_size = first.size(),
             second_map_start = second.start(),
             second_map_size = second.size(),
-            "QuantumRing at {:x}, size: {}, wraparound at {:x}, size: {}",
+            padding_map_start = padding.as_ref().map(|p| p.start()).unwrap_or_default(),
+            padding_map_size = padding.as_ref().map(|p| p.size()).unwrap_or_default(),
+            "QuantumRing at {:x}, size: {}, wraparound at {:x}, size: {}, padding at {:x}, padding size: {}",
             first.start(),
             first.size(),
             second.start(),
-            second.size()
+            second.size(),
+            padding.as_ref().map(|p| p.start()).unwrap_or_default(),
+            padding.as_ref().map(|p| p.size()).unwrap_or_default(),
         );
 
         let qr = Self {
@@ -157,6 +188,7 @@ impl QuantumRing {
             capacity: first.size(),
             first_map: first,
             second_map: second,
+            padding_map: padding,
 
             #[cfg(any(feature = "futures", feature = "tokio"))]
             read_waker: None,
@@ -170,6 +202,7 @@ impl QuantumRing {
     pub fn new_with_size(
         size: usize,
         allowed_page_sizes: PageSizes,
+        min_padding: usize,
     ) -> Result<Self, QuantumRingError> {
         let supported_page_sizes = MmapOptions::page_sizes()?;
         if !supported_page_sizes.intersects(allowed_page_sizes) {
@@ -217,14 +250,20 @@ impl QuantumRing {
             PageSizes::from_bits(1usize << page_size.0).unwrap(),
         );
 
-        Self::new(pages, page_size)
+        Self::new(pages, page_size, min_padding.saturating_sub(overhead))
     }
 
     pub fn madvise(&self, access_pattern: AccessPattern) -> io::Result<()> {
         unsafe {
             madvise::madvise(
                 self.first_map.as_ptr(),
-                self.first_map.len() + self.second_map.size(),
+                self.first_map.len()
+                    + self.second_map.size()
+                    + self
+                        .padding_map
+                        .as_ref()
+                        .map(|p| p.size())
+                        .unwrap_or_default(),
                 access_pattern,
             )
         }
@@ -441,26 +480,32 @@ mod test {
     use std::assert_matches::assert_matches;
     use std::io::{ErrorKind, Read, Write};
     use std::iter::zip;
+    use std::ops::RangeBounds;
 
-    use mmap_rs::PageSizes;
+    use mmap_rs::{MmapOptions, PageSizes};
     use rand::RngCore;
     use tracing::Level;
 
-    use crate::QuantumRing;
+    use crate::{PageSizeIter, QuantumRing};
 
-    #[test]
-    fn does_the_magic_happen() {
+    #[cfg(test)]
+    #[ctor::ctor]
+    fn test_global_init() {
         tracing_subscriber::fmt::fmt()
             .compact()
             .without_time()
             .with_max_level(Level::TRACE)
             .init();
+    }
 
+
+    #[test]
+    fn does_the_magic_happen() {
         type TestType = usize;
         let test_val: TestType = 0x42069;
 
         let mut qring =
-            QuantumRing::new_with_size(std::mem::size_of_val(&test_val), PageSizes::all())
+            QuantumRing::new_with_size(std::mem::size_of_val(&test_val), PageSizes::all(), 0)
                 .expect("unable to create QuantumRing");
         assert_ne!(qring.first_map.as_ptr(), qring.second_map.as_ptr());
 
@@ -475,7 +520,7 @@ mod test {
 
     #[test]
     fn initial_read_write_len() {
-        let qring = QuantumRing::new_with_size(4096, PageSizes::all())
+        let qring = QuantumRing::new_with_size(4096, PageSizes::all(), 0)
             .expect("unable to create QuantumRing");
         let size = qring.capacity();
 
@@ -485,7 +530,7 @@ mod test {
 
     #[test]
     fn read_write() {
-        let mut qring = QuantumRing::new_with_size(128, PageSizes::all())
+        let mut qring = QuantumRing::new_with_size(128, PageSizes::all(), 0)
             .expect("unable to create QuantumRing");
         let size = qring.capacity();
         let test_chunk_size = (size / 2) + (size / 4);
@@ -546,7 +591,7 @@ mod test {
 
     #[test]
     fn wrap_around() {
-        let mut qring = QuantumRing::new_with_size(128, PageSizes::all())
+        let mut qring = QuantumRing::new_with_size(128, PageSizes::all(), 42069)
             .expect("unable to create QuantumRing");
         let size = qring.capacity();
         let test_chunk_size = size;
@@ -594,5 +639,45 @@ mod test {
 
         assert_eq!(written.len(), read.len());
         assert!(zip(written.into_iter(), read.into_iter()).all(|(written, read)| written == read));
+    }
+
+    #[test]
+    fn read_with_lookahead_does_not_segfault() {
+        let mut qring = QuantumRing::new(
+            1,
+            PageSizeIter::new(
+                MmapOptions::page_sizes().expect("unable to get supported page sizes"),
+            )
+            .next()
+            .expect("no page sizes available"),
+            std::mem::size_of::<usize>(),
+        )
+        .expect("unable to create QuantumRing");
+
+        assert_matches!(qring.padding_map, Some(ref map) if map.size() > 0);
+
+        unsafe {
+            qring.advance_write(qring.write_len() - 1);
+            qring.advance_read(qring.read_len());
+            qring.advance_write(qring.write_len());
+
+            assert_eq!(qring.write_len(), 0);
+            assert_eq!(qring.read_len(), qring.capacity());
+
+            let read_slice_end_ptr = qring
+                .read_slice()
+                .as_ptr()
+                .add(qring.read_len() - 1);
+
+            // suppose we are at the last byte of the read_slice (read_slice_end_ptr) and we need
+            // to read a usize but we do not want to crash.
+            // So we should point into our padding.
+            assert_matches!(qring.padding_map, Some(ref map) if map.as_ptr_range().contains(&read_slice_end_ptr.add(std::mem::size_of::<usize>())));
+
+            _ = std::hint::black_box((read_slice_end_ptr as *const usize).read_unaligned());
+
+            // we still alive? no segfault??
+            assert!(true);
+        }
     }
 }
